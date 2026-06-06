@@ -9,13 +9,15 @@
 #[cfg(feature = "bindings")]
 extern crate bindgen;
 
+#[cfg(any(feature = "bindings", all(feature = "static", windows)))]
+use std::path::PathBuf;
+
 #[cfg(feature = "bindings")]
 use {
     bindgen::BindgenError,
     std::env::var,
     std::ffi::OsStr,
     std::fs::{read_dir, write},
-    std::path::PathBuf,
 };
 
 #[derive(Debug)]
@@ -218,5 +220,62 @@ fn statically_link_pdfium() {
 
         println!("cargo:rustc-link-lib=dylib=pdfium");
         println!("cargo:rustc-link-search=native={}", path);
+    } else if let Some(path) = repo_pdfium_dynamic_link_path() {
+        println!("cargo:rustc-link-lib=dylib=pdfium");
+        println!("cargo:rustc-link-search=native={}", path.display());
     }
+}
+
+#[cfg(all(feature = "static", windows))]
+fn repo_pdfium_dynamic_link_path() -> Option<PathBuf> {
+    let target = std::env::var("TARGET").ok()?;
+    let import_lib = repo_pdfium_roots()
+        .into_iter()
+        .map(|root| {
+            root.join("pdfium")
+                .join(&target)
+                .join("lib")
+                .join("pdfium.dll.lib")
+        })
+        .find(|path| path.is_file())?;
+    if !import_lib.is_file() {
+        return None;
+    }
+
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").ok()?);
+    let link_dir = out_dir.join("pdfium-link");
+    std::fs::create_dir_all(&link_dir).ok()?;
+    std::fs::copy(&import_lib, link_dir.join("pdfium.lib")).ok()?;
+    println!("cargo:rerun-if-changed={}", import_lib.display());
+    Some(link_dir)
+}
+
+#[cfg(all(feature = "static", windows))]
+fn repo_pdfium_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(out_dir) = std::env::var("OUT_DIR") {
+        let out_dir = PathBuf::from(out_dir);
+        let workspace_root = out_dir
+            .parent()
+            .and_then(|path| path.parent())
+            .and_then(|path| path.parent())
+            .and_then(|path| path.parent())
+            .and_then(|target_dir| target_dir.parent());
+        if let Some(workspace_root) = workspace_root {
+            roots.push(workspace_root.to_path_buf());
+        }
+    }
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let manifest_dir = PathBuf::from(manifest_dir);
+        if let Ok(projects_root) = manifest_dir.join("../..").canonicalize() {
+            roots.push(projects_root.clone());
+            roots.push(projects_root.join("imagire"));
+        }
+    }
+    roots
+}
+
+#[cfg(all(feature = "static", not(windows)))]
+fn repo_pdfium_dynamic_link_path() -> Option<PathBuf> {
+    None
 }
